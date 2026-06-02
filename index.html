@@ -326,6 +326,7 @@
       calibrationStartAt: 0,
       capturedFrames: [],
       partialText: '',
+      autoEndCount: 0,
       recording: false,
       listening: false,
       lastStatusAt: 0
@@ -513,6 +514,7 @@
         }
       }
       audio.capturedFrames = [];
+      audio.autoEndCount = 0;
       ui.stopBtn.disabled = true;
       ui.stopBtn.textContent = 'Detener';
       ui.listenBtn.disabled = false;
@@ -615,6 +617,7 @@
         audio.source.connect(audio.analyser);
         audio.background = new Map(FREQS.map((freq) => [freq, []]));
         audio.capturedFrames = [];
+        audio.autoEndCount = 0;
         audio.recording = false;
         audio.listening = true;
         audio.calibrationStartAt = performance.now();
@@ -642,6 +645,17 @@
 
           audio.recording = true;
           audio.capturedFrames.push({ bands, at: now });
+          const char = classifyChar(bands);
+          if (char === END_CHAR) {
+            audio.autoEndCount += 1;
+          } else {
+            audio.autoEndCount = 0;
+          }
+          if (audio.autoEndCount >= 3) {
+            setListenStatus('Fin de mensaje detectado. Cerrando y analizando...');
+            finalizeRecording();
+            return;
+          }
           if (now - audio.lastStatusAt > 250) {
             setListenStatus(`Grabando audio...\nMuestras: ${audio.capturedFrames.length}\nAl soltar se analizara todo junto.`);
             audio.lastStatusAt = now;
