@@ -372,8 +372,15 @@
         .trim();
     }
 
+    function normalizeDraftText(value) {
+      return value
+        .toLowerCase()
+        .replace(/[^a-z ]+/g, '')
+        .replace(/\s+/g, ' ');
+    }
+
     function ensureInputSanitized() {
-      const clean = sanitizeText(ui.senderText.value);
+      const clean = normalizeDraftText(ui.senderText.value);
       if (ui.senderText.value !== clean) ui.senderText.value = clean;
       return clean;
     }
