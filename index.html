@@ -294,20 +294,18 @@
     };
 
     const ALPHABET = 'abcdefghijklmnopqrstuvwxyz ';
-    const BASE_FREQ = 12400;
-    const FREQ_STEP = 110;
-    const SYNC_FREQ = 19550;
+    const BASE_FREQ = 7200;
+    const FREQ_STEP = 160;
     const STEP_MS = 50;
-    const SAMPLE_MS = 10;
-    const CALIBRATION_MS = 700;
-    const SYNC_MS = 100;
-    const TONE_MS = 100;
-    const GAP_MS = 50;
-    const AMP = 0.18;
-    const THRESHOLD_RATIO = 4.0;
-    const DOMINANCE_RATIO = 2.0;
-    const HOLD_SAMPLES = 2;
-    const MIN_EMIT_GAP_MS = 150;
+    const SAMPLE_MS = 50;
+    const CALIBRATION_MS = 1000;
+    const TONE_MS = 350;
+    const GAP_MS = 150;
+    const AMP = 0.14;
+    const THRESHOLD_RATIO = 3.0;
+    const DOMINANCE_RATIO = 1.35;
+    const HOLD_SAMPLES = 4;
+    const MIN_EMIT_GAP_MS = 300;
 
     const CHAR_TO_FREQ = new Map(Array.from(ALPHABET, (char, index) => [char, BASE_FREQ + index * FREQ_STEP]));
     const FREQS = Array.from(CHAR_TO_FREQ.values());
@@ -318,15 +316,11 @@
       source: null,
       stream: null,
       sampleTimer: null,
-      calibrationStartAt: 0,
       background: new Map(FREQS.map((freq) => [freq, []])),
+      calibrationStartAt: 0,
       partialText: '',
       stableChar: null,
       stableCount: 0,
-      syncStableCount: 0,
-      clockLocked: false,
-      readWindowStartAt: 0,
-      readWindowEndAt: 0,
       lastEmitAt: 0,
       listening: false,
       lastStatusAt: 0
@@ -405,7 +399,7 @@
       for (const [freq, value] of bands.entries()) {
         const bucket = audio.background.get(freq);
         bucket.push(value);
-        if (bucket.length > 100) bucket.shift();
+        if (bucket.length > 80) bucket.shift();
       }
     }
 
@@ -413,23 +407,10 @@
       return Math.max(mean(audio.background.get(freq) || []), 1e-8);
     }
 
-    function classifySync(bands) {
-      const value = bands.get(SYNC_FREQ) || 0;
-      const floor = floorFor(SYNC_FREQ);
-      let strongestChar = 0;
-      for (const freq of CHAR_TO_FREQ.values()) {
-        strongestChar = Math.max(strongestChar, bands.get(freq) || 0);
-      }
-      if (value < floor * THRESHOLD_RATIO) return false;
-      if (strongestChar > 0 && value / strongestChar < DOMINANCE_RATIO) return false;
-      return true;
-    }
-
     function classifyChar(bands) {
       let bestChar = null;
       let bestValue = -1;
       let secondValue = -1;
-
       for (const [char, freq] of CHAR_TO_FREQ.entries()) {
         const value = bands.get(freq) || 0;
         if (value > bestValue) {
@@ -440,7 +421,6 @@
           secondValue = value;
         }
       }
-
       if (!bestChar) return null;
       const freq = CHAR_TO_FREQ.get(bestChar);
       const floor = floorFor(freq);
@@ -467,14 +447,6 @@
       setListenStatus(`Letra detectada: ${label}\nTexto parcial: ${audio.partialText || '---'}`);
     }
 
-    function playTone(osc, gain, freq, startAt, durationMs) {
-      osc.frequency.setValueAtTime(freq, startAt);
-      osc.frequency.linearRampToValueAtTime(freq, startAt + 0.005);
-      gain.gain.setValueAtTime(AMP, startAt);
-      gain.gain.setValueAtTime(0, startAt + durationMs / 1000);
-      return startAt + durationMs / 1000;
-    }
-
     function nextAlignedWallTime(stepMs, leadMs = 0) {
       const now = Date.now() + leadMs;
       return Math.ceil(now / stepMs) * stepMs;
@@ -484,8 +456,12 @@
       return ctx.currentTime + Math.max(0, (wallMs - Date.now()) / 1000);
     }
 
-    function scheduleToneAtWall(ctx, osc, gain, freq, wallStartMs, durationMs) {
-      playTone(osc, gain, freq, wallToAudioTime(ctx, wallStartMs), durationMs);
+    function playToneAtWall(osc, gain, ctx, freq, wallStartMs, durationMs) {
+      const startAt = wallToAudioTime(ctx, wallStartMs);
+      osc.frequency.setValueAtTime(freq, startAt);
+      osc.frequency.linearRampToValueAtTime(freq, startAt + 0.01);
+      gain.gain.setValueAtTime(AMP, startAt);
+      gain.gain.setValueAtTime(0, startAt + durationMs / 1000);
       return wallStartMs + durationMs;
     }
 
@@ -528,9 +504,10 @@
       for (let i = 0; i < clean.length; i++) {
         const char = clean[i];
         const freq = CHAR_TO_FREQ.get(char);
-        setSendStatus(`Enviando letra ${i + 1}/${clean.length}: ${char === ' ' ? '[space]' : char}\nReloj: ${new Date(wall).toISOString().slice(17, 23)}s`);
-        wall = scheduleToneAtWall(ctx, osc, gain, SYNC_FREQ, wall, SYNC_MS) + GAP_MS;
-        wall = scheduleToneAtWall(ctx, osc, gain, freq, wall, TONE_MS) + GAP_MS;
+        const label = char === ' ' ? '[space]' : char;
+        setSendStatus(`Enviando letra ${i + 1}/${clean.length}: ${label}`);
+        wall = playToneAtWall(osc, gain, ctx, freq, wall, TONE_MS);
+        wall += GAP_MS;
       }
 
       osc.stop(wallToAudioTime(ctx, wall + STEP_MS));
@@ -557,16 +534,12 @@
         audio.source = ctx.createMediaStreamSource(stream);
         audio.analyser = ctx.createAnalyser();
         audio.analyser.fftSize = 16384;
-        audio.analyser.smoothingTimeConstant = 0.01;
+        audio.analyser.smoothingTimeConstant = 0.02;
         audio.source.connect(audio.analyser);
         audio.background = new Map(FREQS.map((freq) => [freq, []]));
         audio.partialText = '';
         audio.stableChar = null;
         audio.stableCount = 0;
-        audio.syncStableCount = 0;
-        audio.clockLocked = false;
-        audio.readWindowStartAt = 0;
-        audio.readWindowEndAt = 0;
         audio.lastEmitAt = 0;
         audio.listening = true;
         audio.calibrationStartAt = performance.now();
@@ -575,81 +548,29 @@
         ui.stopBtn.disabled = false;
         setListenStatus('Calibrando ruido ambiente...');
 
-        audio.listening = true;
         scheduleAlignedTick(STEP_MS, () => {
           const bands = captureSnapshot();
           if (!bands) return;
-          const now = Date.now();
+          const now = performance.now();
 
           if (now - audio.calibrationStartAt < CALIBRATION_MS) {
             updateBackground(bands);
             const pct = Math.min(100, Math.round(((now - audio.calibrationStartAt) / CALIBRATION_MS) * 100));
-            if (now - audio.lastStatusAt > 120) {
+            if (now - audio.lastStatusAt > 150) {
               setListenStatus(`Calibrando ruido ambiente... ${pct}%`);
               audio.lastStatusAt = now;
             }
             return;
           }
 
-          if (!audio.backgroundReady) {
-            audio.backgroundReady = true;
-            setListenStatus('Ruido ambiente calibrado. Esperando una frecuencia.');
-          }
-
-          updateBackground(bands);
-          const syncDetected = classifySync(bands);
-
-          if (!audio.clockLocked) {
-            if (syncDetected) {
-              audio.syncStableCount++;
-            } else {
-              audio.syncStableCount = 0;
-            }
-
-            if (audio.syncStableCount >= HOLD_SAMPLES) {
-              audio.clockLocked = true;
-              audio.syncStableCount = 0;
-              audio.readWindowStartAt = now + GAP_MS;
-              audio.readWindowEndAt = audio.readWindowStartAt + TONE_MS;
-              audio.stableChar = null;
-              audio.stableCount = 0;
-              setListenStatus('Sync detectado. Reloj bloqueado. Esperando la letra...');
-            } else if (now - audio.lastStatusAt > 900) {
-              setListenStatus('Buscando sync ultrasonico para alinear el reloj...');
-              audio.lastStatusAt = now;
-            }
-            return;
-          }
-
-          if (now < audio.readWindowStartAt) {
-            if (now - audio.lastStatusAt > 150) {
-              setListenStatus('Sync bloqueado. Preparando ventana de lectura...');
-              audio.lastStatusAt = now;
-            }
-            return;
-          }
-
-          if (now > audio.readWindowEndAt) {
-            if (audio.stableChar && audio.stableCount >= HOLD_SAMPLES && now - audio.lastEmitAt >= MIN_EMIT_GAP_MS) {
-              emitChar(audio.stableChar);
-              audio.lastEmitAt = now;
-            } else {
-              setListenStatus('Ventana de lectura cerrada sin letra clara. Buscando el siguiente sync...');
-            }
-            audio.clockLocked = false;
-            audio.stableChar = null;
-            audio.stableCount = 0;
-            audio.readWindowStartAt = 0;
-            audio.readWindowEndAt = 0;
-            return;
-          }
-
           const char = classifyChar(bands);
+
           if (!char) {
+            updateBackground(bands);
             audio.stableChar = null;
             audio.stableCount = 0;
-            if (now - audio.lastStatusAt > 260) {
-              setListenStatus('Sync alineado. Esperando la frecuencia de la letra...');
+            if (now - audio.lastStatusAt > 500) {
+              setListenStatus('Escuchando frecuencias. Esperando una letra clara...');
               audio.lastStatusAt = now;
             }
             return;
@@ -662,9 +583,14 @@
             audio.stableCount = 1;
           }
 
-          if (audio.stableCount >= HOLD_SAMPLES && now - audio.lastStatusAt > 250) {
+          if (audio.stableCount >= HOLD_SAMPLES && now - audio.lastEmitAt >= MIN_EMIT_GAP_MS) {
+            emitChar(char);
+            audio.lastEmitAt = now;
+            audio.stableChar = null;
+            audio.stableCount = 0;
+          } else if (now - audio.lastStatusAt > 250) {
             const label = char === ' ' ? '[space]' : char;
-            setListenStatus(`Frecuencia confirmada: ${label}\nEsperando fin de ventana...`);
+            setListenStatus(`Frecuencia detectada: ${label}\nConfirmando estabilidad...`);
             audio.lastStatusAt = now;
           }
         });
@@ -677,15 +603,10 @@
     }
 
     function stopListening() {
-      if (audio.sampleTimer) clearInterval(audio.sampleTimer);
+      if (audio.sampleTimer) clearTimeout(audio.sampleTimer);
       audio.sampleTimer = null;
-      audio.backgroundReady = false;
       audio.stableChar = null;
       audio.stableCount = 0;
-      audio.syncStableCount = 0;
-      audio.clockLocked = false;
-      audio.readWindowStartAt = 0;
-      audio.readWindowEndAt = 0;
       audio.lastEmitAt = 0;
       audio.listening = false;
       audio.partialText = '';
