@@ -298,25 +298,35 @@
     const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
     const SPACE_CHAR = ' ';
     const END_CHAR = '|';
-    const BASE_FREQ = 360;
-    const FREQ_STEP = 72;
+    const LOW_BASE_FREQ = 260;
+    const LOW_FREQ_STEP = 24;
+    const HIGH_BASE_FREQ = 780;
+    const HIGH_FREQ_STEP = 36;
     const SPACE_FREQ = 210;
     const END_FREQ = 132;
     const STEP_MS = 50;
     const SAMPLE_MS = 50;
     const CALIBRATION_MS = 1000;
-    const TONE_MS = 240;
-    const GAP_MS = 90;
+    const TONE_MS = 160;
+    const GAP_MS = 70;
     const END_TONE_MS = 120;
     const AMP = 0.16;
     const THRESHOLD_RATIO = 3.4;
     const DOMINANCE_RATIO = 1.45;
     const MIN_CAPTURE_SAMPLES = 2;
 
-    const CHAR_TO_FREQ = new Map(Array.from(LETTERS, (char, index) => [char, BASE_FREQ + index * FREQ_STEP]));
-    CHAR_TO_FREQ.set(SPACE_CHAR, SPACE_FREQ);
-    CHAR_TO_FREQ.set(END_CHAR, END_FREQ);
-    const FREQS = [END_FREQ, SPACE_FREQ, ...Array.from(LETTERS, (char, index) => BASE_FREQ + index * FREQ_STEP)];
+    const CHAR_TO_FREQS = new Map(Array.from(LETTERS, (char, index) => ([
+      char,
+      [LOW_BASE_FREQ + index * LOW_FREQ_STEP, HIGH_BASE_FREQ + index * HIGH_FREQ_STEP]
+    ])));
+    CHAR_TO_FREQS.set(SPACE_CHAR, [SPACE_FREQ]);
+    CHAR_TO_FREQS.set(END_CHAR, [END_FREQ]);
+    const FREQS = [
+      END_FREQ,
+      SPACE_FREQ,
+      ...Array.from(LETTERS, (_, index) => LOW_BASE_FREQ + index * LOW_FREQ_STEP),
+      ...Array.from(LETTERS, (_, index) => HIGH_BASE_FREQ + index * HIGH_FREQ_STEP)
+    ];
 
     const audio = {
       ctx: null,
@@ -419,19 +429,21 @@
       let bestChar = null;
       let bestValue = -1;
       let secondValue = -1;
-      for (const [char, freq] of CHAR_TO_FREQ.entries()) {
-        const value = bands.get(freq) || 0;
-        if (value > bestValue) {
-          secondValue = bestValue;
-          bestValue = value;
-          bestChar = char;
-        } else if (value > secondValue) {
-          secondValue = value;
+      for (const [char, freqs] of CHAR_TO_FREQS.entries()) {
+        for (const freq of freqs) {
+          const value = bands.get(freq) || 0;
+          if (value > bestValue) {
+            secondValue = bestValue;
+            bestValue = value;
+            bestChar = char;
+          } else if (value > secondValue) {
+            secondValue = value;
+          }
         }
       }
       if (!bestChar) return null;
-      const freq = CHAR_TO_FREQ.get(bestChar);
-      const floor = floorFor(freq);
+      const freqs = CHAR_TO_FREQS.get(bestChar) || [];
+      const floor = Math.max(...freqs.map((freq) => floorFor(freq)));
       if (bestValue < floor * THRESHOLD_RATIO) return null;
       if (secondValue > 0 && bestValue / secondValue < DOMINANCE_RATIO) return null;
       return bestChar;
@@ -571,20 +583,32 @@
       const ctx = await ensureContext();
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
+      const secondOsc = ctx.createOscillator();
+      const secondGain = ctx.createGain();
       osc.type = 'sine';
+      secondOsc.type = 'sine';
       gain.gain.value = 0;
+      secondGain.gain.value = 0;
       osc.connect(gain).connect(ctx.destination);
+      secondOsc.connect(secondGain).connect(ctx.destination);
 
       const startWall = nextAlignedWallTime(STEP_MS, 250);
       let wall = startWall;
       osc.start(wallToAudioTime(ctx, startWall - STEP_MS));
+      secondOsc.start(wallToAudioTime(ctx, startWall - STEP_MS));
 
       for (let i = 0; i < clean.length; i++) {
         const char = clean[i];
-        const freq = CHAR_TO_FREQ.get(char);
         const label = char === ' ' ? '[space]' : char;
         setSendStatus(`Enviando letra ${i + 1}/${clean.length}: ${label}`);
-        wall = playToneAtWall(osc, gain, ctx, freq, wall, TONE_MS);
+        const freqs = CHAR_TO_FREQS.get(char) || [];
+        if (freqs.length === 1) {
+          wall = playToneAtWall(osc, gain, ctx, freqs[0], wall, TONE_MS);
+        } else {
+          wall = playToneAtWall(osc, gain, ctx, freqs[0], wall, TONE_MS);
+          wall += 20;
+          wall = playToneAtWall(secondOsc, secondGain, ctx, freqs[1], wall, TONE_MS);
+        }
         wall += GAP_MS;
       }
 
@@ -592,6 +616,7 @@
       wall = playToneAtWall(osc, gain, ctx, END_FREQ, wall, END_TONE_MS);
 
       osc.stop(wallToAudioTime(ctx, wall + STEP_MS));
+      secondOsc.stop(wallToAudioTime(ctx, wall + STEP_MS));
       setSendStatus(`Mensaje enviado.\nCaracteres: ${clean.length}\nSolo letras y espacios.`);
       ui.sendBtn.disabled = true;
       await new Promise((resolve) => {
