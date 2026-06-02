@@ -1,0 +1,627 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Audio Bridge Text</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #081018;
+      --panel: rgba(16, 24, 34, 0.88);
+      --panel-2: rgba(25, 35, 49, 0.92);
+      --text: #edf4ff;
+      --muted: #92a3b8;
+      --accent: #7de2ff;
+      --accent-2: #8cffc1;
+      --danger: #ff8f9d;
+      --border: rgba(130, 160, 190, 0.22);
+      --shadow: 0 24px 70px rgba(0, 0, 0, 0.35);
+    }
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0;
+      min-height: 100%;
+      background:
+        radial-gradient(circle at top, rgba(125, 226, 255, 0.14), transparent 28%),
+        radial-gradient(circle at bottom right, rgba(140, 255, 193, 0.12), transparent 24%),
+        linear-gradient(180deg, #061018 0%, #05090f 100%);
+      color: var(--text);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    body {
+      display: grid;
+      place-items: center;
+      padding: 24px;
+    }
+    .app {
+      width: min(860px, 100%);
+      display: grid;
+      gap: 18px;
+    }
+    .hero, .panel {
+      border: 1px solid var(--border);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(14px);
+      border-radius: 24px;
+    }
+    .hero {
+      padding: 22px 22px 18px;
+    }
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(1.5rem, 3vw, 2.35rem);
+      letter-spacing: -0.04em;
+    }
+    .subtitle {
+      margin: 0;
+      color: var(--muted);
+      line-height: 1.5;
+      max-width: 62ch;
+    }
+    .roles {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+    button, input, .badge {
+      font: inherit;
+    }
+    .role-btn, .primary-btn, .ghost-btn {
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 14px 16px;
+      cursor: pointer;
+      transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+    }
+    .role-btn:hover, .primary-btn:hover, .ghost-btn:hover { transform: translateY(-1px); }
+    .role-btn {
+      text-align: left;
+      background: linear-gradient(180deg, rgba(22, 31, 44, 0.95), rgba(17, 23, 33, 0.95));
+      color: var(--text);
+    }
+    .role-btn strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 1.03rem;
+    }
+    .role-btn span {
+      display: block;
+      color: var(--muted);
+      line-height: 1.4;
+      font-size: 0.95rem;
+    }
+    .panel {
+      display: none;
+      padding: 20px;
+      background: var(--panel-2);
+    }
+    .panel.active { display: block; }
+    .panel-head {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+    .panel h2 {
+      margin: 0;
+      letter-spacing: -0.03em;
+      font-size: 1.25rem;
+    }
+    .badge {
+      align-self: start;
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      padding: 8px 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(125, 226, 255, 0.2);
+      color: var(--accent);
+      background: rgba(125, 226, 255, 0.08);
+      font-size: 0.9rem;
+      white-space: nowrap;
+    }
+    .grid {
+      display: grid;
+      gap: 14px;
+    }
+    .text-input {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: rgba(6, 10, 16, 0.85);
+      color: var(--text);
+      padding: 15px 16px;
+      outline: none;
+      font-size: 1rem;
+    }
+    .text-input:focus {
+      border-color: rgba(125, 226, 255, 0.55);
+      box-shadow: 0 0 0 4px rgba(125, 226, 255, 0.1);
+    }
+    .row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+    .primary-btn {
+      background: linear-gradient(180deg, rgba(125, 226, 255, 0.92), rgba(99, 194, 255, 0.88));
+      color: #04202d;
+      border-color: transparent;
+      font-weight: 700;
+    }
+    .ghost-btn {
+      background: rgba(255, 255, 255, 0.03);
+      color: var(--text);
+    }
+    .hint, .status, .small {
+      color: var(--muted);
+      line-height: 1.5;
+    }
+    .status {
+      padding: 12px 14px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(0, 0, 0, 0.16);
+      min-height: 48px;
+      white-space: pre-wrap;
+    }
+    .received {
+      font-size: clamp(1.3rem, 4vw, 2.2rem);
+      line-height: 1.25;
+      letter-spacing: -0.04em;
+      color: var(--accent-2);
+      min-height: 1.4em;
+      word-break: break-word;
+    }
+    .split {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+    .card {
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: rgba(8, 12, 18, 0.55);
+      padding: 14px;
+    }
+    .sr-only {
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
+      white-space: nowrap;
+      border: 0;
+    }
+    @media (max-width: 720px) {
+      .roles, .split { grid-template-columns: 1fr; }
+      .hero, .panel { border-radius: 20px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="app">
+    <section class="hero">
+      <h1>Audio Bridge Text</h1>
+      <p class="subtitle">
+        Emisor y receptor en una sola pagina. El emisor manda un texto corto en tonos altos
+        y el receptor intenta reconstruirlo desde el microfono.
+      </p>
+      <div class="roles">
+        <button class="role-btn" id="chooseSender" type="button">
+          <strong>Emisor</strong>
+          <span>Escribe hasta 20 caracteres y envia el texto como audio agudo.</span>
+        </button>
+        <button class="role-btn" id="chooseReceiver" type="button">
+          <strong>Receptor</strong>
+          <span>Activa el microfono y espera a que aparezca el mensaje recibido.</span>
+        </button>
+      </div>
+    </section>
+
+    <section class="panel" id="senderPanel" aria-live="polite">
+      <div class="panel-head">
+        <div>
+          <h2>Modo emisor</h2>
+          <p class="small">Usa parlantes o auriculares. El audio se genera en tonos muy altos y cortos.</p>
+        </div>
+        <span class="badge">Salida de audio</span>
+      </div>
+      <div class="grid">
+        <label class="sr-only" for="senderText">Texto a enviar</label>
+        <input class="text-input" id="senderText" maxlength="20" autocomplete="off" placeholder="Escribe tu mensaje" />
+        <div class="row">
+          <button class="primary-btn" id="sendBtn" type="button">Enviar audio</button>
+          <button class="ghost-btn" id="backFromSender" type="button">Cambiar modo</button>
+        </div>
+        <div class="hint">Antes de enviar, sube el volumen del dispositivo. El receptor debe estar escuchando.</div>
+        <div class="status" id="sendStatus">Listo para enviar.</div>
+      </div>
+    </section>
+
+    <section class="panel" id="receiverPanel" aria-live="polite">
+      <div class="panel-head">
+        <div>
+          <h2>Modo receptor</h2>
+          <p class="small">Abre esta pagina desde localhost o https para que el microfono funcione.</p>
+        </div>
+        <span class="badge">Entrada de microfono</span>
+      </div>
+      <div class="grid">
+        <div class="row">
+          <button class="primary-btn" id="listenBtn" type="button">Activar microfono y escuchar</button>
+          <button class="ghost-btn" id="stopBtn" type="button" disabled>Detener</button>
+          <button class="ghost-btn" id="backFromReceiver" type="button">Cambiar modo</button>
+        </div>
+        <div class="hint">El receptor necesita permiso de microfono. El texto aparece apenas se reconoce el frame completo.</div>
+        <div class="split">
+          <div class="card">
+            <div class="small">Ultimo mensaje recibido</div>
+            <div class="received" id="receivedText">---</div>
+          </div>
+          <div class="card">
+            <div class="small">Estado del receptor</div>
+            <div class="status" id="listenStatus">En espera.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const ui = {
+      chooseSender: document.getElementById('chooseSender'),
+      chooseReceiver: document.getElementById('chooseReceiver'),
+      senderPanel: document.getElementById('senderPanel'),
+      receiverPanel: document.getElementById('receiverPanel'),
+      backFromSender: document.getElementById('backFromSender'),
+      backFromReceiver: document.getElementById('backFromReceiver'),
+      senderText: document.getElementById('senderText'),
+      sendBtn: document.getElementById('sendBtn'),
+      sendStatus: document.getElementById('sendStatus'),
+      listenBtn: document.getElementById('listenBtn'),
+      stopBtn: document.getElementById('stopBtn'),
+      listenStatus: document.getElementById('listenStatus'),
+      receivedText: document.getElementById('receivedText')
+    };
+
+    const audio = {
+      ctx: null,
+      analyser: null,
+      source: null,
+      stream: null,
+      sampleTimer: null,
+      decodeTimer: null,
+      samples: [],
+      lastSeenAt: 0,
+      lastDecodeSignature: ''
+    };
+
+    const BIT_MS = 80;
+    const SAMPLE_MS = 20;
+    const PREAMBLE_BYTES = [0xaa, 0xaa, 0xaa, 0xaa, 0xd5];
+    const FREQ_0 = 14500;
+    const FREQ_1 = 15500;
+    const AMP = 0.22;
+    const LEAD_IN_MS = 180;
+    const TRAIL_IN_MS = 220;
+
+    function showPanel(which) {
+      ui.senderPanel.classList.toggle('active', which === 'sender');
+      ui.receiverPanel.classList.toggle('active', which === 'receiver');
+    }
+
+    function setSendStatus(text) {
+      ui.sendStatus.textContent = text;
+    }
+
+    function setListenStatus(text) {
+      ui.listenStatus.textContent = text;
+    }
+
+    function showContextWarning() {
+      if (!window.isSecureContext) {
+        setSendStatus('Esta pagina esta en file://. En celular, el microfono y a veces el audio se bloquean. Abrela desde http://localhost o https.');
+        setListenStatus('Contexto no seguro: usa http://localhost o https para habilitar microfono y audio.');
+      }
+    }
+
+    function bytesToBits(bytes) {
+      const bits = [];
+      for (const byte of bytes) {
+        for (let i = 7; i >= 0; i--) {
+          bits.push((byte >> i) & 1);
+        }
+      }
+      return bits;
+    }
+
+    function checksum(bytes) {
+      let sum = 0;
+      for (const byte of bytes) sum = (sum ^ byte) & 0xff;
+      return sum;
+    }
+
+    function textToFrame(text) {
+      const payload = Array.from(new TextEncoder().encode(text));
+      const frame = [...PREAMBLE_BYTES, payload.length & 0xff, ...payload, checksum(payload)];
+      return { payload, frame };
+    }
+
+    function bitsToBytes(bits) {
+      const out = [];
+      for (let i = 0; i + 7 < bits.length; i += 8) {
+        let value = 0;
+        for (let b = 0; b < 8; b++) value = (value << 1) | bits[i + b];
+        out.push(value);
+      }
+      return out;
+    }
+
+    function bitsToKey(bits) {
+      return bits.join('');
+    }
+
+    async function ensureContext() {
+      if (!audio.ctx) {
+        const Ctx = window.AudioContext || window.webkitAudioContext;
+        audio.ctx = new Ctx({ latencyHint: 'interactive' });
+      }
+      if (audio.ctx.state === 'suspended') {
+        await audio.ctx.resume();
+      }
+      return audio.ctx;
+    }
+
+    async function sendAudio(text) {
+      if (!text.trim()) {
+        setSendStatus('Escribe un texto antes de enviar.');
+        return;
+      }
+      if (!window.isSecureContext) {
+        setSendStatus('No se puede activar bien el audio desde file:// en celular. Usa http://localhost o https.');
+        return;
+      }
+      if ([...text].length > 20) {
+        setSendStatus('El texto debe tener como maximo 20 caracteres.');
+        return;
+      }
+
+      const ctx = await ensureContext();
+      const { frame } = textToFrame(text);
+      const bits = bytesToBits(frame);
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      gain.gain.value = 0;
+      osc.connect(gain).connect(ctx.destination);
+
+      const startAt = ctx.currentTime + 0.08;
+      let t = startAt;
+
+      osc.frequency.setValueAtTime(FREQ_0, t);
+      osc.start(t);
+
+      t += LEAD_IN_MS / 1000;
+      gain.gain.setValueAtTime(AMP, t);
+
+      for (const bit of bits) {
+        osc.frequency.setValueAtTime(bit ? FREQ_1 : FREQ_0, t);
+        osc.frequency.linearRampToValueAtTime(bit ? FREQ_1 : FREQ_0, t + 0.005);
+        t += BIT_MS / 1000;
+      }
+
+      gain.gain.setValueAtTime(0, t);
+      t += TRAIL_IN_MS / 1000;
+      osc.stop(t);
+
+      setSendStatus(`Enviando "${text}" como audio...\nBytes: ${frame.length}\nDuracion aprox: ${((LEAD_IN_MS + BIT_MS * bits.length + TRAIL_IN_MS) / 1000).toFixed(1)} s`);
+      ui.sendBtn.disabled = true;
+      await new Promise((resolve) => {
+        osc.onended = resolve;
+      });
+      ui.sendBtn.disabled = false;
+      setSendStatus('Mensaje enviado. Puedes repetirlo si hace falta.');
+    }
+
+    function bandEnergy(data, freq, sampleRate, fftSize) {
+      const bin = freq * fftSize / sampleRate;
+      const center = Math.round(bin);
+      let total = 0;
+      let count = 0;
+      for (let i = -2; i <= 2; i++) {
+        const idx = center + i;
+        if (idx >= 0 && idx < data.length) {
+          const power = Math.pow(10, data[idx] / 20);
+          total += power;
+          count++;
+        }
+      }
+      return count ? total / count : 0;
+    }
+
+    function classifySample() {
+      const analyser = audio.analyser;
+      const ctx = audio.ctx;
+      if (!analyser || !ctx) return null;
+      const data = new Float32Array(analyser.frequencyBinCount);
+      analyser.getFloatFrequencyData(data);
+      const e0 = bandEnergy(data, FREQ_0, ctx.sampleRate, analyser.fftSize);
+      const e1 = bandEnergy(data, FREQ_1, ctx.sampleRate, analyser.fftSize);
+      const total = e0 + e1 + 1e-12;
+      const diff = Math.abs(e1 - e0) / total;
+      if (diff < 0.18) return null;
+      return e1 > e0 ? 1 : 0;
+    }
+
+    function samplesToBits(samples, offset) {
+      const bits = [];
+      for (let i = offset; i + 3 < samples.length; i += 4) {
+        const chunk = samples.slice(i, i + 4);
+        let ones = 0;
+        let zeros = 0;
+        for (const sample of chunk) {
+          if (sample === 1) ones++;
+          else if (sample === 0) zeros++;
+        }
+        if (ones >= 3) bits.push(1);
+        else if (zeros >= 3) bits.push(0);
+        else bits.push(null);
+      }
+      return bits;
+    }
+
+    function findPattern(bits, pattern) {
+      outer: for (let i = 0; i <= bits.length - pattern.length; i++) {
+        for (let j = 0; j < pattern.length; j++) {
+          if (bits[i + j] !== pattern[j]) continue outer;
+        }
+        return i;
+      }
+      return -1;
+    }
+
+    function decodeFrameFromBits(bits) {
+      const preambleBits = bytesToBits(PREAMBLE_BYTES);
+      const start = findPattern(bits, preambleBits);
+      if (start < 0) return null;
+      const after = bits.slice(start + preambleBits.length);
+      if (after.length < 16) return null;
+      const raw = bitsToBytes(after.filter((bit) => bit === 0 || bit === 1));
+      if (raw.length < 2) return null;
+      const len = raw[0];
+      const needed = 1 + len + 1;
+      if (raw.length < needed) return null;
+      const payload = raw.slice(1, 1 + len);
+      const crc = raw[1 + len];
+      if (checksum(payload) !== crc) return { error: true, text: null, reason: 'Checksum fallo.' };
+      try {
+        const text = new TextDecoder().decode(new Uint8Array(payload));
+        return { error: false, text };
+      } catch {
+        return { error: true, text: null, reason: 'No se pudo decodificar UTF-8.' };
+      }
+    }
+
+    function tryDecode() {
+      if (!audio.samples.length) return;
+      const maxSamples = 1200;
+      if (audio.samples.length > maxSamples) {
+        audio.samples.splice(0, audio.samples.length - maxSamples);
+      }
+
+      for (let offset = 0; offset < 4; offset++) {
+        const bits = samplesToBits(audio.samples, offset).filter((bit) => bit === 0 || bit === 1);
+        if (bits.length < 48) continue;
+        const frame = decodeFrameFromBits(bits);
+        if (!frame) continue;
+        const signature = `${offset}:${frame.text ?? frame.reason}`;
+        if (signature === audio.lastDecodeSignature) return;
+        audio.lastDecodeSignature = signature;
+        if (!frame.error) {
+          ui.receivedText.textContent = frame.text || '---';
+          setListenStatus(`Mensaje recibido correctamente.\nLongitud: ${[...frame.text].length} caracteres`);
+          audio.samples.length = 0;
+          return;
+        }
+        setListenStatus(frame.reason);
+      }
+    }
+
+    async function startListening() {
+      if (audio.stream) return;
+      if (!window.isSecureContext) {
+        setListenStatus('El microfono no se puede activar desde file:// en celular. Usa http://localhost o https.');
+        return;
+      }
+      const ctx = await ensureContext();
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audio.stream = stream;
+        audio.source = ctx.createMediaStreamSource(stream);
+        audio.analyser = ctx.createAnalyser();
+        audio.analyser.fftSize = 8192;
+        audio.analyser.smoothingTimeConstant = 0.08;
+        audio.source.connect(audio.analyser);
+        audio.samples = [];
+        audio.lastDecodeSignature = '';
+        audio.lastSeenAt = performance.now();
+        ui.stopBtn.disabled = false;
+        ui.listenBtn.disabled = true;
+        setListenStatus('Microfono activo. Esperando tonos...');
+
+        audio.sampleTimer = window.setInterval(() => {
+          const bit = classifySample();
+          audio.samples.push(bit);
+          if (bit !== null) audio.lastSeenAt = performance.now();
+        }, SAMPLE_MS);
+
+        audio.decodeTimer = window.setInterval(() => {
+          tryDecode();
+          const silence = performance.now() - audio.lastSeenAt;
+          if (silence > 1800 && audio.samples.length > 0) {
+            setListenStatus('Esperando nuevo mensaje...');
+          }
+        }, 120);
+      } catch (error) {
+        setListenStatus('No se pudo activar el microfono.');
+        ui.listenBtn.disabled = false;
+        ui.stopBtn.disabled = true;
+        throw error;
+      }
+    }
+
+    function stopListening() {
+      if (audio.sampleTimer) clearInterval(audio.sampleTimer);
+      if (audio.decodeTimer) clearInterval(audio.decodeTimer);
+      audio.sampleTimer = null;
+      audio.decodeTimer = null;
+      audio.samples = [];
+      audio.lastDecodeSignature = '';
+      if (audio.stream) {
+        audio.stream.getTracks().forEach((track) => track.stop());
+        audio.stream = null;
+      }
+      if (audio.source) {
+        try { audio.source.disconnect(); } catch {}
+        audio.source = null;
+      }
+      ui.stopBtn.disabled = true;
+      ui.listenBtn.disabled = false;
+      setListenStatus('En espera.');
+    }
+
+    ui.chooseSender.addEventListener('click', () => showPanel('sender'));
+    ui.chooseReceiver.addEventListener('click', () => showPanel('receiver'));
+    ui.backFromSender.addEventListener('click', () => showPanel(''));
+    ui.backFromReceiver.addEventListener('click', () => showPanel(''));
+    ui.sendBtn.addEventListener('click', async () => {
+      try {
+        await sendAudio(ui.senderText.value.trim());
+      } catch (error) {
+        setSendStatus(`Error al enviar: ${error.message || error}`);
+      }
+    });
+    ui.listenBtn.addEventListener('click', async () => {
+      try {
+        await startListening();
+      } catch {}
+    });
+    ui.stopBtn.addEventListener('click', stopListening);
+    ui.senderText.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') ui.sendBtn.click();
+    });
+
+    showContextWarning();
+    showPanel('');
+  </script>
+</body>
+</html>
