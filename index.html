@@ -301,25 +301,31 @@
       sampleTimer: null,
       decodeTimer: null,
       samples: [],
+      backgroundE0: [],
+      backgroundE1: [],
       partialText: '',
       decodedPacketCount: 0,
       lastSeenAt: 0,
       lastStatusAt: 0,
       lastSyncAt: 0,
+      calibrationStartAt: 0,
       lastPacketText: '',
+      seenPacketSeqs: new Set(),
       phase: 'idle'
     };
 
-    const SAMPLE_MS = 8;
-    const SAMPLES_PER_BIT = 3;
+    const SAMPLE_MS = 10;
+    const SAMPLES_PER_BIT = 6;
     const BIT_MS = SAMPLE_MS * SAMPLES_PER_BIT;
-    const SYNC_BYTES = [0x53, 0xa9, 0x6c];
-    const FREQ_0 = 16850;
-    const FREQ_1 = 18750;
-    const AMP = 0.16;
-    const PACKET_GAP_MS = 48;
-    const LEAD_IN_MS = 48;
-    const TRAIL_IN_MS = 56;
+    const SYNC_BYTES = [0x5e, 0xa7, 0x31];
+    const FREQ_0 = 1050;
+    const FREQ_1 = 1850;
+    const AMP = 0.18;
+    const PACKET_GAP_MS = 120;
+    const LEAD_IN_MS = 120;
+    const TRAIL_IN_MS = 120;
+    const PACKET_REPEATS = 2;
+    const CALIBRATION_MS = 700;
     const MAX_SAMPLE_HISTORY = 2600;
 
     function showPanel(which) {
@@ -359,10 +365,11 @@
     }
 
     function textToPackets(text) {
-      return Array.from(text).map((char) => {
+      return Array.from(text).map((char, seq) => {
         const payload = Array.from(new TextEncoder().encode(char));
-        const frame = [...SYNC_BYTES, payload.length & 0xff, ...payload, checksum(payload)];
-        return { char, payload, frame };
+        const header = [seq & 0xff, payload.length & 0xff];
+        const frame = [...SYNC_BYTES, ...header, ...payload, checksum(header.concat(payload))];
+        return { char, seq: seq & 0xff, payload, frame };
       });
     }
 
@@ -415,6 +422,25 @@
       return t;
     }
 
+    function mean(values) {
+      if (!values.length) return 0;
+      return values.reduce((sum, value) => sum + value, 0) / values.length;
+    }
+
+    function updateBackgroundFloor(e0, e1) {
+      audio.backgroundE0.push(e0);
+      audio.backgroundE1.push(e1);
+      if (audio.backgroundE0.length > 80) audio.backgroundE0.shift();
+      if (audio.backgroundE1.length > 80) audio.backgroundE1.shift();
+    }
+
+    function backgroundFloor() {
+      return {
+        e0: Math.max(mean(audio.backgroundE0), 1e-8),
+        e1: Math.max(mean(audio.backgroundE1), 1e-8)
+      };
+    }
+
     async function sendAudio(text) {
       if (!text.trim()) {
         setSendStatus('Escribe un texto antes de enviar.');
@@ -444,11 +470,13 @@
       for (let index = 0; index < packets.length; index++) {
         const packet = packets[index];
         const bits = bytesToBits(packet.frame);
-        setSendStatus(`Enviando letra ${index + 1}/${packets.length}: "${packet.char}"\nSincronizando y transmitiendo paquete independiente...`);
-        t += (index === 0 ? LEAD_IN_MS : PACKET_GAP_MS) / 1000;
-        gain.gain.setValueAtTime(AMP, t);
-        t = playBits(ctx, osc, gain, bits, t);
-        gain.gain.setValueAtTime(0, t);
+        for (let repeat = 0; repeat < PACKET_REPEATS; repeat++) {
+          setSendStatus(`Enviando letra ${index + 1}/${packets.length}: "${packet.char}"\nRepeticion ${repeat + 1}/${PACKET_REPEATS} para reducir errores.`);
+          t += (index === 0 && repeat === 0 ? LEAD_IN_MS : PACKET_GAP_MS) / 1000;
+          gain.gain.setValueAtTime(AMP, t);
+          t = playBits(ctx, osc, gain, bits, t);
+          gain.gain.setValueAtTime(0, t);
+        }
       }
 
       t += TRAIL_IN_MS / 1000;
@@ -487,10 +515,14 @@
       analyser.getFloatFrequencyData(data);
       const e0 = bandEnergy(data, FREQ_0, ctx.sampleRate, analyser.fftSize);
       const e1 = bandEnergy(data, FREQ_1, ctx.sampleRate, analyser.fftSize);
-      const total = e0 + e1 + 1e-12;
-      const diff = Math.abs(e1 - e0) / total;
-      if (diff < 0.18) return null;
-      return e1 > e0 ? 1 : 0;
+      const floor = backgroundFloor();
+      const ratio = Math.max(e0, e1) / (Math.min(e0, e1) + 1e-12);
+      const dominant = e1 > e0 ? 1 : 0;
+      const dominantEnergy = dominant ? e1 : e0;
+      const floorEnergy = dominant ? floor.e1 : floor.e0;
+      if (dominantEnergy < floorEnergy * 1.9) return null;
+      if (ratio < 1.55) return null;
+      return dominant;
     }
 
     function samplesToBits(samples, offset) {
@@ -526,35 +558,36 @@
       let cursor = 0;
       let waiting = null;
 
-      while (cursor <= bits.length - syncBits.length - 8) {
+      while (cursor <= bits.length - syncBits.length - 16) {
         const start = findPattern(bits, syncBits, cursor);
         if (start < 0) break;
 
         const headerStart = start + syncBits.length;
-        if (bits.length < headerStart + 8) {
-          waiting = 'Sincronizado. Esperando el tamaño de la siguiente letra...';
+        if (bits.length < headerStart + 16) {
+          waiting = 'Sincronizado. Esperando el encabezado de la siguiente letra...';
           break;
         }
 
-        const headerBytes = bitsToBytes(bits.slice(headerStart, headerStart + 8));
-        const len = headerBytes[0];
-        const packetBits = syncBits.length + 8 + (len + 1) * 8;
+        const headerBytes = bitsToBytes(bits.slice(headerStart, headerStart + 16));
+        const seq = headerBytes[0];
+        const len = headerBytes[1];
+        const packetBits = syncBits.length + 16 + (len + 1) * 8;
         if (bits.length < start + packetBits) {
           waiting = `Sincronizado. Esperando completar la letra (${packets.length + 1}).`;
           break;
         }
 
-        const packetBytes = bitsToBytes(bits.slice(headerStart, headerStart + 8 + (len + 1) * 8));
-        const payload = packetBytes.slice(1, 1 + len);
-        const crc = packetBytes[1 + len];
-        if (checksum(payload) !== crc) {
+        const packetBytes = bitsToBytes(bits.slice(headerStart, headerStart + 16 + (len + 1) * 8));
+        const payload = packetBytes.slice(2, 2 + len);
+        const crc = packetBytes[2 + len];
+        if (checksum([seq, len].concat(payload)) !== crc) {
           cursor = start + 1;
           continue;
         }
 
         try {
           const text = new TextDecoder().decode(new Uint8Array(payload));
-          packets.push({ text, start, end: start + packetBits });
+          packets.push({ text, seq, start, end: start + packetBits });
           cursor = start + packetBits;
         } catch {
           cursor = start + 1;
@@ -583,9 +616,9 @@
       if (!best) {
         const silence = performance.now() - audio.lastSeenAt;
         if (silence > 1400) {
-          setListenPhase('listening', 'Sin señal clara. Esperando el siguiente paquete...');
+          setListenPhase('listening', 'No veo un tono suficiente sobre el ruido ambiente. Ajusta volumen o acerca el microfono.');
         } else {
-          setListenPhase('listening', 'Buscando sincronizacion en tiempo real...');
+          setListenPhase('listening', 'Filtrando ruido ambiente y buscando sincronizacion...');
         }
         return;
       }
@@ -593,10 +626,12 @@
       if (best.packets.length > audio.decodedPacketCount) {
         for (let i = audio.decodedPacketCount; i < best.packets.length; i++) {
           const packet = best.packets[i];
+          if (audio.seenPacketSeqs.has(packet.seq)) continue;
+          audio.seenPacketSeqs.add(packet.seq);
           appendReceivedText(packet.text);
           audio.lastPacketText = packet.text;
           audio.lastSyncAt = performance.now();
-          setReceivedStatus(`Letra recibida: "${packet.text}"\nMensaje parcial: ${audio.partialText}`);
+          setReceivedStatus(`Letra recibida con exito: "${packet.text}"\nMensaje parcial: ${audio.partialText}\nEstado: sincronizado y decodificando letra por letra.`);
         }
         audio.decodedPacketCount = best.packets.length;
         return;
@@ -628,25 +663,57 @@
         audio.analyser.smoothingTimeConstant = 0.04;
         audio.source.connect(audio.analyser);
         audio.samples = [];
+        audio.backgroundE0 = [];
+        audio.backgroundE1 = [];
         audio.partialText = '';
         audio.decodedPacketCount = 0;
         audio.lastPacketText = '';
+        audio.seenPacketSeqs = new Set();
         audio.lastSeenAt = performance.now();
         audio.lastStatusAt = performance.now();
         audio.lastSyncAt = 0;
+        audio.calibrationStartAt = performance.now();
         ui.receivedText.textContent = '---';
         ui.stopBtn.disabled = false;
         ui.listenBtn.disabled = true;
-        setListenPhase('listening', 'Microfono activo. Buscando sincronizacion y escuchando letra por letra...');
+        setListenPhase('calibrating', 'Microfono activo. Calibrando ruido ambiente antes de buscar letras...');
 
         audio.sampleTimer = window.setInterval(() => {
-          const bit = classifySample();
+          const analyser = audio.analyser;
+          const ctx = audio.ctx;
+          let bit = null;
+          if (analyser && ctx) {
+            const data = new Float32Array(analyser.frequencyBinCount);
+            analyser.getFloatFrequencyData(data);
+            const e0 = bandEnergy(data, FREQ_0, ctx.sampleRate, analyser.fftSize);
+            const e1 = bandEnergy(data, FREQ_1, ctx.sampleRate, analyser.fftSize);
+            if (audio.phase === 'calibrating') {
+              updateBackgroundFloor(e0, e1);
+              if (performance.now() - audio.lastStatusAt > 120) {
+                const pct = Math.min(100, Math.round(((performance.now() - audio.calibrationStartAt) / CALIBRATION_MS) * 100));
+                setListenStatus(`Calibrando ruido ambiente... ${pct}%`);
+              }
+              if (performance.now() - audio.calibrationStartAt >= CALIBRATION_MS) {
+                setListenPhase('listening', 'Ruido ambiente calibrado. Buscando sincronizacion letra por letra...');
+              }
+            }
+            const floor = backgroundFloor();
+            const ratio = Math.max(e0, e1) / (Math.min(e0, e1) + 1e-12);
+            const dominant = e1 > e0 ? 1 : 0;
+            const dominantEnergy = dominant ? e1 : e0;
+            const floorEnergy = dominant ? floor.e1 : floor.e0;
+            if (audio.phase !== 'calibrating' && dominantEnergy > floorEnergy * 1.9 && ratio > 1.55) {
+              bit = dominant;
+            }
+          }
           audio.samples.push(bit);
           if (bit !== null) audio.lastSeenAt = performance.now();
         }, SAMPLE_MS);
 
         audio.decodeTimer = window.setInterval(() => {
-          tryDecode();
+          if (audio.phase !== 'calibrating') {
+            tryDecode();
+          }
           const silence = performance.now() - audio.lastSeenAt;
           if (silence > 1800 && audio.samples.length > 0 && audio.phase !== 'listening') {
             setListenPhase('listening', `Esperando nueva letra o un nuevo mensaje...\nLetras recibidas: ${audio.decodedPacketCount}`);
@@ -669,6 +736,7 @@
       audio.partialText = '';
       audio.decodedPacketCount = 0;
       audio.lastPacketText = '';
+      audio.seenPacketSeqs = new Set();
       audio.phase = 'idle';
       if (audio.stream) {
         audio.stream.getTracks().forEach((track) => track.stop());
