@@ -301,18 +301,26 @@
       sampleTimer: null,
       decodeTimer: null,
       samples: [],
+      partialText: '',
+      decodedPacketCount: 0,
       lastSeenAt: 0,
-      lastDecodeSignature: ''
+      lastStatusAt: 0,
+      lastSyncAt: 0,
+      lastPacketText: '',
+      phase: 'idle'
     };
 
-    const BIT_MS = 80;
-    const SAMPLE_MS = 20;
-    const PREAMBLE_BYTES = [0xaa, 0xaa, 0xaa, 0xaa, 0xd5];
-    const FREQ_0 = 14500;
-    const FREQ_1 = 15500;
-    const AMP = 0.22;
-    const LEAD_IN_MS = 180;
-    const TRAIL_IN_MS = 220;
+    const SAMPLE_MS = 8;
+    const SAMPLES_PER_BIT = 3;
+    const BIT_MS = SAMPLE_MS * SAMPLES_PER_BIT;
+    const SYNC_BYTES = [0x53, 0xa9, 0x6c];
+    const FREQ_0 = 16850;
+    const FREQ_1 = 18750;
+    const AMP = 0.16;
+    const PACKET_GAP_MS = 48;
+    const LEAD_IN_MS = 48;
+    const TRAIL_IN_MS = 56;
+    const MAX_SAMPLE_HISTORY = 2600;
 
     function showPanel(which) {
       ui.senderPanel.classList.toggle('active', which === 'sender');
@@ -350,10 +358,12 @@
       return sum;
     }
 
-    function textToFrame(text) {
-      const payload = Array.from(new TextEncoder().encode(text));
-      const frame = [...PREAMBLE_BYTES, payload.length & 0xff, ...payload, checksum(payload)];
-      return { payload, frame };
+    function textToPackets(text) {
+      return Array.from(text).map((char) => {
+        const payload = Array.from(new TextEncoder().encode(char));
+        const frame = [...SYNC_BYTES, payload.length & 0xff, ...payload, checksum(payload)];
+        return { char, payload, frame };
+      });
     }
 
     function bitsToBytes(bits) {
@@ -366,10 +376,6 @@
       return out;
     }
 
-    function bitsToKey(bits) {
-      return bits.join('');
-    }
-
     async function ensureContext() {
       if (!audio.ctx) {
         const Ctx = window.AudioContext || window.webkitAudioContext;
@@ -379,6 +385,34 @@
         await audio.ctx.resume();
       }
       return audio.ctx;
+    }
+
+    function setListenPhase(phase, text) {
+      audio.phase = phase;
+      audio.lastStatusAt = performance.now();
+      setListenStatus(text);
+    }
+
+    function appendReceivedText(char) {
+      audio.partialText += char;
+      ui.receivedText.textContent = audio.partialText || '---';
+    }
+
+    function setReceivedStatus(text) {
+      ui.receivedText.textContent = audio.partialText || '---';
+      setListenPhase('receiving', text);
+    }
+
+    function playBits(ctx, osc, gain, bits, startTime) {
+      let t = startTime;
+      osc.frequency.setValueAtTime(bits[0] ? FREQ_1 : FREQ_0, t);
+      for (const bit of bits) {
+        const freq = bit ? FREQ_1 : FREQ_0;
+        osc.frequency.setValueAtTime(freq, t);
+        osc.frequency.linearRampToValueAtTime(freq, t + 0.004);
+        t += BIT_MS / 1000;
+      }
+      return t;
     }
 
     async function sendAudio(text) {
@@ -396,8 +430,7 @@
       }
 
       const ctx = await ensureContext();
-      const { frame } = textToFrame(text);
-      const bits = bytesToBits(frame);
+      const packets = textToPackets(text);
       const osc = ctx.createOscillator();
       const gain = ctx.createGain();
       osc.type = 'sine';
@@ -406,24 +439,22 @@
 
       const startAt = ctx.currentTime + 0.08;
       let t = startAt;
-
-      osc.frequency.setValueAtTime(FREQ_0, t);
       osc.start(t);
 
-      t += LEAD_IN_MS / 1000;
-      gain.gain.setValueAtTime(AMP, t);
-
-      for (const bit of bits) {
-        osc.frequency.setValueAtTime(bit ? FREQ_1 : FREQ_0, t);
-        osc.frequency.linearRampToValueAtTime(bit ? FREQ_1 : FREQ_0, t + 0.005);
-        t += BIT_MS / 1000;
+      for (let index = 0; index < packets.length; index++) {
+        const packet = packets[index];
+        const bits = bytesToBits(packet.frame);
+        setSendStatus(`Enviando letra ${index + 1}/${packets.length}: "${packet.char}"\nSincronizando y transmitiendo paquete independiente...`);
+        t += (index === 0 ? LEAD_IN_MS : PACKET_GAP_MS) / 1000;
+        gain.gain.setValueAtTime(AMP, t);
+        t = playBits(ctx, osc, gain, bits, t);
+        gain.gain.setValueAtTime(0, t);
       }
 
-      gain.gain.setValueAtTime(0, t);
       t += TRAIL_IN_MS / 1000;
       osc.stop(t);
 
-      setSendStatus(`Enviando "${text}" como audio...\nBytes: ${frame.length}\nDuracion aprox: ${((LEAD_IN_MS + BIT_MS * bits.length + TRAIL_IN_MS) / 1000).toFixed(1)} s`);
+      setSendStatus(`Mensaje enviado letra por letra.\nCaracteres: ${packets.length}\nDuracion aprox: ${(t - startAt).toFixed(1)} s`);
       ui.sendBtn.disabled = true;
       await new Promise((resolve) => {
         osc.onended = resolve;
@@ -464,8 +495,8 @@
 
     function samplesToBits(samples, offset) {
       const bits = [];
-      for (let i = offset; i + 3 < samples.length; i += 4) {
-        const chunk = samples.slice(i, i + 4);
+      for (let i = offset; i + SAMPLES_PER_BIT - 1 < samples.length; i += SAMPLES_PER_BIT) {
+        const chunk = samples.slice(i, i + SAMPLES_PER_BIT);
         let ones = 0;
         let zeros = 0;
         for (const sample of chunk) {
@@ -479,8 +510,8 @@
       return bits;
     }
 
-    function findPattern(bits, pattern) {
-      outer: for (let i = 0; i <= bits.length - pattern.length; i++) {
+    function findPattern(bits, pattern, start = 0) {
+      outer: for (let i = start; i <= bits.length - pattern.length; i++) {
         for (let j = 0; j < pattern.length; j++) {
           if (bits[i + j] !== pattern[j]) continue outer;
         }
@@ -489,50 +520,95 @@
       return -1;
     }
 
-    function decodeFrameFromBits(bits) {
-      const preambleBits = bytesToBits(PREAMBLE_BYTES);
-      const start = findPattern(bits, preambleBits);
-      if (start < 0) return null;
-      const after = bits.slice(start + preambleBits.length);
-      if (after.length < 16) return null;
-      const raw = bitsToBytes(after.filter((bit) => bit === 0 || bit === 1));
-      if (raw.length < 2) return null;
-      const len = raw[0];
-      const needed = 1 + len + 1;
-      if (raw.length < needed) return null;
-      const payload = raw.slice(1, 1 + len);
-      const crc = raw[1 + len];
-      if (checksum(payload) !== crc) return { error: true, text: null, reason: 'Checksum fallo.' };
-      try {
-        const text = new TextDecoder().decode(new Uint8Array(payload));
-        return { error: false, text };
-      } catch {
-        return { error: true, text: null, reason: 'No se pudo decodificar UTF-8.' };
+    function decodePacketsFromBits(bits) {
+      const syncBits = bytesToBits(SYNC_BYTES);
+      const packets = [];
+      let cursor = 0;
+      let waiting = null;
+
+      while (cursor <= bits.length - syncBits.length - 8) {
+        const start = findPattern(bits, syncBits, cursor);
+        if (start < 0) break;
+
+        const headerStart = start + syncBits.length;
+        if (bits.length < headerStart + 8) {
+          waiting = 'Sincronizado. Esperando el tamaño de la siguiente letra...';
+          break;
+        }
+
+        const headerBytes = bitsToBytes(bits.slice(headerStart, headerStart + 8));
+        const len = headerBytes[0];
+        const packetBits = syncBits.length + 8 + (len + 1) * 8;
+        if (bits.length < start + packetBits) {
+          waiting = `Sincronizado. Esperando completar la letra (${packets.length + 1}).`;
+          break;
+        }
+
+        const packetBytes = bitsToBytes(bits.slice(headerStart, headerStart + 8 + (len + 1) * 8));
+        const payload = packetBytes.slice(1, 1 + len);
+        const crc = packetBytes[1 + len];
+        if (checksum(payload) !== crc) {
+          cursor = start + 1;
+          continue;
+        }
+
+        try {
+          const text = new TextDecoder().decode(new Uint8Array(payload));
+          packets.push({ text, start, end: start + packetBits });
+          cursor = start + packetBits;
+        } catch {
+          cursor = start + 1;
+        }
       }
+
+      return { packets, waiting };
     }
 
     function tryDecode() {
       if (!audio.samples.length) return;
-      const maxSamples = 1200;
-      if (audio.samples.length > maxSamples) {
-        audio.samples.splice(0, audio.samples.length - maxSamples);
+      if (audio.samples.length > MAX_SAMPLE_HISTORY) {
+        audio.samples.splice(0, audio.samples.length - MAX_SAMPLE_HISTORY);
       }
 
-      for (let offset = 0; offset < 4; offset++) {
+      let best = null;
+      for (let offset = 0; offset < SAMPLES_PER_BIT; offset++) {
         const bits = samplesToBits(audio.samples, offset).filter((bit) => bit === 0 || bit === 1);
-        if (bits.length < 48) continue;
-        const frame = decodeFrameFromBits(bits);
-        if (!frame) continue;
-        const signature = `${offset}:${frame.text ?? frame.reason}`;
-        if (signature === audio.lastDecodeSignature) return;
-        audio.lastDecodeSignature = signature;
-        if (!frame.error) {
-          ui.receivedText.textContent = frame.text || '---';
-          setListenStatus(`Mensaje recibido correctamente.\nLongitud: ${[...frame.text].length} caracteres`);
-          audio.samples.length = 0;
-          return;
+        if (bits.length < 32) continue;
+        const candidate = decodePacketsFromBits(bits);
+        if (!best || candidate.packets.length > best.packets.length) {
+          best = { offset, bits, ...candidate };
         }
-        setListenStatus(frame.reason);
+      }
+
+      if (!best) {
+        const silence = performance.now() - audio.lastSeenAt;
+        if (silence > 1400) {
+          setListenPhase('listening', 'Sin señal clara. Esperando el siguiente paquete...');
+        } else {
+          setListenPhase('listening', 'Buscando sincronizacion en tiempo real...');
+        }
+        return;
+      }
+
+      if (best.packets.length > audio.decodedPacketCount) {
+        for (let i = audio.decodedPacketCount; i < best.packets.length; i++) {
+          const packet = best.packets[i];
+          appendReceivedText(packet.text);
+          audio.lastPacketText = packet.text;
+          audio.lastSyncAt = performance.now();
+          setReceivedStatus(`Letra recibida: "${packet.text}"\nMensaje parcial: ${audio.partialText}`);
+        }
+        audio.decodedPacketCount = best.packets.length;
+        return;
+      }
+
+      const silence = performance.now() - audio.lastSeenAt;
+      if (best.waiting) {
+        setListenPhase('receiving', `${best.waiting}\nLetras recibidas: ${audio.decodedPacketCount}\nMensaje parcial: ${audio.partialText || '---'}`);
+      } else if (silence > 1400) {
+        setListenPhase('listening', `Mensaje en pausa. Ya recibidas ${audio.decodedPacketCount} letras.\nMensaje parcial: ${audio.partialText || '---'}`);
+      } else {
+        setListenPhase('receiving', `Sincronizado. Esperando la siguiente letra...\nLetras recibidas: ${audio.decodedPacketCount}\nMensaje parcial: ${audio.partialText || '---'}`);
       }
     }
 
@@ -548,15 +624,20 @@
         audio.stream = stream;
         audio.source = ctx.createMediaStreamSource(stream);
         audio.analyser = ctx.createAnalyser();
-        audio.analyser.fftSize = 8192;
-        audio.analyser.smoothingTimeConstant = 0.08;
+        audio.analyser.fftSize = 16384;
+        audio.analyser.smoothingTimeConstant = 0.04;
         audio.source.connect(audio.analyser);
         audio.samples = [];
-        audio.lastDecodeSignature = '';
+        audio.partialText = '';
+        audio.decodedPacketCount = 0;
+        audio.lastPacketText = '';
         audio.lastSeenAt = performance.now();
+        audio.lastStatusAt = performance.now();
+        audio.lastSyncAt = 0;
+        ui.receivedText.textContent = '---';
         ui.stopBtn.disabled = false;
         ui.listenBtn.disabled = true;
-        setListenStatus('Microfono activo. Esperando tonos...');
+        setListenPhase('listening', 'Microfono activo. Buscando sincronizacion y escuchando letra por letra...');
 
         audio.sampleTimer = window.setInterval(() => {
           const bit = classifySample();
@@ -567,8 +648,8 @@
         audio.decodeTimer = window.setInterval(() => {
           tryDecode();
           const silence = performance.now() - audio.lastSeenAt;
-          if (silence > 1800 && audio.samples.length > 0) {
-            setListenStatus('Esperando nuevo mensaje...');
+          if (silence > 1800 && audio.samples.length > 0 && audio.phase !== 'listening') {
+            setListenPhase('listening', `Esperando nueva letra o un nuevo mensaje...\nLetras recibidas: ${audio.decodedPacketCount}`);
           }
         }, 120);
       } catch (error) {
@@ -585,7 +666,10 @@
       audio.sampleTimer = null;
       audio.decodeTimer = null;
       audio.samples = [];
-      audio.lastDecodeSignature = '';
+      audio.partialText = '';
+      audio.decodedPacketCount = 0;
+      audio.lastPacketText = '';
+      audio.phase = 'idle';
       if (audio.stream) {
         audio.stream.getTracks().forEach((track) => track.stop());
         audio.stream = null;
@@ -597,6 +681,7 @@
       ui.stopBtn.disabled = true;
       ui.listenBtn.disabled = false;
       setListenStatus('En espera.');
+      ui.receivedText.textContent = '---';
     }
 
     ui.chooseSender.addEventListener('click', () => showPanel('sender'));
