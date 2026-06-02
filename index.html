@@ -295,14 +295,17 @@
 
     const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
     const SPACE_CHAR = ' ';
+    const END_CHAR = '|';
     const BASE_FREQ = 360;
     const FREQ_STEP = 72;
     const SPACE_FREQ = 210;
-    const STEP_MS = 50;
-    const SAMPLE_MS = 50;
+    const END_FREQ = 132;
+    const STEP_MS = 10;
+    const SAMPLE_MS = 10;
     const CALIBRATION_MS = 1000;
-    const TONE_MS = 240;
-    const GAP_MS = 90;
+    const TONE_MS = 40;
+    const GAP_MS = 10;
+    const END_TONE_MS = 120;
     const AMP = 0.16;
     const THRESHOLD_RATIO = 3.4;
     const DOMINANCE_RATIO = 1.45;
@@ -310,7 +313,8 @@
 
     const CHAR_TO_FREQ = new Map(Array.from(LETTERS, (char, index) => [char, BASE_FREQ + index * FREQ_STEP]));
     CHAR_TO_FREQ.set(SPACE_CHAR, SPACE_FREQ);
-    const FREQS = [SPACE_FREQ, ...Array.from(LETTERS, (char, index) => BASE_FREQ + index * FREQ_STEP)];
+    CHAR_TO_FREQ.set(END_CHAR, END_FREQ);
+    const FREQS = [END_FREQ, SPACE_FREQ, ...Array.from(LETTERS, (char, index) => BASE_FREQ + index * FREQ_STEP)];
 
     const audio = {
       ctx: null,
@@ -322,6 +326,7 @@
       calibrationStartAt: 0,
       capturedFrames: [],
       partialText: '',
+      autoEndCount: 0,
       recording: false,
       listening: false,
       lastStatusAt: 0
@@ -442,6 +447,7 @@
     }
 
     function emitChar(char) {
+      if (char === END_CHAR) return;
       audio.partialText += char;
       ui.receivedText.textContent = audio.partialText || '---';
       const label = char === ' ' ? '[space]' : char;
@@ -462,6 +468,10 @@
 
       for (const frame of frames) {
         const char = classifyChar(frame.bands);
+        if (char === END_CHAR) {
+          pushActive();
+          break;
+        }
         if (char === activeChar) {
           activeCount++;
           continue;
@@ -475,6 +485,42 @@
 
       pushActive();
       return decoded.join('');
+    }
+
+    function finalizeRecording(reason) {
+      if (audio.sampleTimer) clearTimeout(audio.sampleTimer);
+      audio.sampleTimer = null;
+      audio.listening = false;
+      audio.recording = false;
+      if (audio.stream) {
+        audio.stream.getTracks().forEach((track) => track.stop());
+        audio.stream = null;
+      }
+      if (audio.source) {
+        try { audio.source.disconnect(); } catch {}
+        audio.source = null;
+      }
+
+      let decoded = '';
+      if (audio.capturedFrames.length) {
+        setListenStatus('Analizando la grabacion completa...');
+        decoded = decodeCapturedFrames(audio.capturedFrames);
+        if (decoded) {
+          audio.partialText += decoded;
+          ui.receivedText.textContent = audio.partialText || '---';
+          setListenStatus(`Analisis listo.\nDecodificado: ${decoded}\nTexto acumulado: ${audio.partialText || '---'}`);
+        } else {
+          setListenStatus('Analisis listo, pero no salio una letra clara.');
+        }
+      }
+      audio.capturedFrames = [];
+      audio.autoEndCount = 0;
+      ui.stopBtn.disabled = true;
+      ui.stopBtn.textContent = 'Detener';
+      ui.listenBtn.disabled = false;
+      ui.receivedText.textContent = audio.partialText || '---';
+      if (!decoded && reason) setListenStatus(reason);
+      if (!decoded && !reason) setListenStatus('En espera.');
     }
 
     function nextAlignedWallTime(stepMs, leadMs = 0) {
@@ -540,6 +586,9 @@
         wall += GAP_MS;
       }
 
+      setSendStatus('Enviando fin de mensaje...');
+      wall = playToneAtWall(osc, gain, ctx, END_FREQ, wall, END_TONE_MS);
+
       osc.stop(wallToAudioTime(ctx, wall + STEP_MS));
       setSendStatus(`Mensaje enviado.\nCaracteres: ${clean.length}\nSolo letras y espacios.`);
       ui.sendBtn.disabled = true;
@@ -570,6 +619,7 @@
         audio.capturedFrames = [];
         audio.recording = false;
         audio.listening = true;
+        audio.autoEndCount = 0;
         audio.calibrationStartAt = performance.now();
         audio.lastStatusAt = 0;
         ui.receivedText.textContent = audio.partialText || '---';
@@ -595,6 +645,16 @@
 
           audio.recording = true;
           audio.capturedFrames.push({ bands, at: now });
+          const char = classifyChar(bands);
+          if (char === END_CHAR) {
+            audio.autoEndCount += 1;
+          } else {
+            audio.autoEndCount = 0;
+          }
+          if (audio.autoEndCount >= 4) {
+            finalizeRecording('Fin de mensaje detectado.');
+            return;
+          }
           if (now - audio.lastStatusAt > 250) {
             setListenStatus(`Grabando audio...\nMuestras: ${audio.capturedFrames.length}\nAl soltar se analizara todo junto.`);
             audio.lastStatusAt = now;
@@ -610,36 +670,7 @@
     }
 
     function stopListening() {
-      if (audio.sampleTimer) clearTimeout(audio.sampleTimer);
-      audio.sampleTimer = null;
-      audio.listening = false;
-      audio.recording = false;
-      if (audio.stream) {
-        audio.stream.getTracks().forEach((track) => track.stop());
-        audio.stream = null;
-      }
-      if (audio.source) {
-        try { audio.source.disconnect(); } catch {}
-        audio.source = null;
-      }
-      let decoded = '';
-      if (audio.capturedFrames.length) {
-        setListenStatus('Analizando la grabacion completa...');
-        decoded = decodeCapturedFrames(audio.capturedFrames);
-        if (decoded) {
-          audio.partialText += decoded;
-          ui.receivedText.textContent = audio.partialText || '---';
-          setListenStatus(`Analisis listo.\nDecodificado: ${decoded}\nTexto acumulado: ${audio.partialText || '---'}`);
-        } else {
-          setListenStatus('Analisis listo, pero no salio una letra clara.');
-        }
-      }
-      audio.capturedFrames = [];
-      ui.stopBtn.disabled = true;
-      ui.stopBtn.textContent = 'Detener';
-      ui.listenBtn.disabled = false;
-      ui.receivedText.textContent = audio.partialText || '---';
-      if (!decoded) setListenStatus('En espera.');
+      finalizeRecording('En espera.');
     }
 
     ui.senderText.setAttribute('maxlength', '120');
