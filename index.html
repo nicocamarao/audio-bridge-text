@@ -299,13 +299,13 @@
     const STEP_MS = 50;
     const SAMPLE_MS = 50;
     const CALIBRATION_MS = 1000;
-    const TONE_MS = 350;
-    const GAP_MS = 150;
+    const TONE_MS = 500;
+    const GAP_MS = 250;
     const AMP = 0.14;
     const THRESHOLD_RATIO = 3.0;
     const DOMINANCE_RATIO = 1.35;
     const HOLD_SAMPLES = 4;
-    const MIN_EMIT_GAP_MS = 300;
+    const MIN_EMIT_GAP_MS = 500;
 
     const CHAR_TO_FREQ = new Map(Array.from(ALPHABET, (char, index) => [char, BASE_FREQ + index * FREQ_STEP]));
     const FREQS = Array.from(CHAR_TO_FREQ.values());
@@ -537,7 +537,6 @@
         audio.analyser.smoothingTimeConstant = 0.02;
         audio.source.connect(audio.analyser);
         audio.background = new Map(FREQS.map((freq) => [freq, []]));
-        audio.partialText = '';
         audio.stableChar = null;
         audio.stableCount = 0;
         audio.lastEmitAt = 0;
@@ -609,7 +608,6 @@
       audio.stableCount = 0;
       audio.lastEmitAt = 0;
       audio.listening = false;
-      audio.partialText = '';
       if (audio.stream) {
         audio.stream.getTracks().forEach((track) => track.stop());
         audio.stream = null;
@@ -620,7 +618,7 @@
       }
       ui.stopBtn.disabled = true;
       ui.listenBtn.disabled = false;
-      ui.receivedText.textContent = '---';
+      ui.receivedText.textContent = audio.partialText || '---';
       setListenStatus('En espera.');
     }
 
