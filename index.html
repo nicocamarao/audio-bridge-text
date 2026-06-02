@@ -259,6 +259,7 @@
         <div class="row">
           <button class="primary-btn" id="listenBtn" type="button">Activar microfono y escuchar</button>
           <button class="ghost-btn" id="stopBtn" type="button" disabled>Detener</button>
+          <button class="ghost-btn" id="clearBtn" type="button">Limpiar</button>
           <button class="ghost-btn" id="backFromReceiver" type="button">Cambiar modo</button>
         </div>
         <div class="hint">El receptor necesita permiso de microfono. Muestra cada letra apenas detecta el patron ultrasonico.</div>
@@ -289,6 +290,7 @@
       sendStatus: document.getElementById('sendStatus'),
       listenBtn: document.getElementById('listenBtn'),
       stopBtn: document.getElementById('stopBtn'),
+      clearBtn: document.getElementById('clearBtn'),
       listenStatus: document.getElementById('listenStatus'),
       receivedText: document.getElementById('receivedText')
     };
@@ -674,6 +676,12 @@
       finalizeRecording('En espera.');
     }
 
+    function clearReceivedText() {
+      audio.partialText = '';
+      ui.receivedText.textContent = '---';
+      setListenStatus('Texto recibido limpiado. En espera.');
+    }
+
     ui.senderText.setAttribute('maxlength', '120');
     ui.senderText.setAttribute('inputmode', 'text');
     ui.senderText.setAttribute('autocomplete', 'off');
@@ -703,6 +711,7 @@
       } catch {}
     });
     ui.stopBtn.addEventListener('click', stopListening);
+    ui.clearBtn.addEventListener('click', clearReceivedText);
 
     showContextWarning();
     showPanel('');
