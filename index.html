@@ -293,22 +293,24 @@
       receivedText: document.getElementById('receivedText')
     };
 
-    const ALPHABET = 'abcdefghijklmnopqrstuvwxyz ';
-    const BASE_FREQ = 7200;
-    const FREQ_STEP = 160;
+    const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
+    const SPACE_CHAR = ' ';
+    const BASE_FREQ = 360;
+    const FREQ_STEP = 72;
+    const SPACE_FREQ = 210;
     const STEP_MS = 50;
     const SAMPLE_MS = 50;
     const CALIBRATION_MS = 1000;
-    const TONE_MS = 500;
-    const GAP_MS = 250;
-    const AMP = 0.14;
-    const THRESHOLD_RATIO = 3.0;
-    const DOMINANCE_RATIO = 1.35;
-    const HOLD_SAMPLES = 4;
-    const MIN_EMIT_GAP_MS = 500;
+    const TONE_MS = 240;
+    const GAP_MS = 90;
+    const AMP = 0.16;
+    const THRESHOLD_RATIO = 3.4;
+    const DOMINANCE_RATIO = 1.45;
+    const MIN_CAPTURE_SAMPLES = 2;
 
-    const CHAR_TO_FREQ = new Map(Array.from(ALPHABET, (char, index) => [char, BASE_FREQ + index * FREQ_STEP]));
-    const FREQS = Array.from(CHAR_TO_FREQ.values());
+    const CHAR_TO_FREQ = new Map(Array.from(LETTERS, (char, index) => [char, BASE_FREQ + index * FREQ_STEP]));
+    CHAR_TO_FREQ.set(SPACE_CHAR, SPACE_FREQ);
+    const FREQS = [SPACE_FREQ, ...Array.from(LETTERS, (char, index) => BASE_FREQ + index * FREQ_STEP)];
 
     const audio = {
       ctx: null,
@@ -318,10 +320,9 @@
       sampleTimer: null,
       background: new Map(FREQS.map((freq) => [freq, []])),
       calibrationStartAt: 0,
+      capturedFrames: [],
       partialText: '',
-      stableChar: null,
-      stableCount: 0,
-      lastEmitAt: 0,
+      recording: false,
       listening: false,
       lastStatusAt: 0
     };
@@ -447,6 +448,35 @@
       setListenStatus(`Letra detectada: ${label}\nTexto parcial: ${audio.partialText || '---'}`);
     }
 
+    function decodeCapturedFrames(frames) {
+      const decoded = [];
+      let activeChar = null;
+      let activeCount = 0;
+
+      const pushActive = () => {
+        if (!activeChar) return;
+        if (activeCount >= MIN_CAPTURE_SAMPLES) decoded.push(activeChar);
+        activeChar = null;
+        activeCount = 0;
+      };
+
+      for (const frame of frames) {
+        const char = classifyChar(frame.bands);
+        if (char === activeChar) {
+          activeCount++;
+          continue;
+        }
+        pushActive();
+        if (char) {
+          activeChar = char;
+          activeCount = 1;
+        }
+      }
+
+      pushActive();
+      return decoded.join('');
+    }
+
     function nextAlignedWallTime(stepMs, leadMs = 0) {
       const now = Date.now() + leadMs;
       return Math.ceil(now / stepMs) * stepMs;
@@ -537,14 +567,15 @@
         audio.analyser.smoothingTimeConstant = 0.02;
         audio.source.connect(audio.analyser);
         audio.background = new Map(FREQS.map((freq) => [freq, []]));
-        audio.stableChar = null;
-        audio.stableCount = 0;
-        audio.lastEmitAt = 0;
+        audio.capturedFrames = [];
+        audio.recording = false;
         audio.listening = true;
         audio.calibrationStartAt = performance.now();
-        ui.receivedText.textContent = '---';
+        audio.lastStatusAt = 0;
+        ui.receivedText.textContent = audio.partialText || '---';
         ui.listenBtn.disabled = true;
         ui.stopBtn.disabled = false;
+        ui.stopBtn.textContent = 'Detener y analizar';
         setListenStatus('Calibrando ruido ambiente...');
 
         scheduleAlignedTick(STEP_MS, () => {
@@ -562,34 +593,10 @@
             return;
           }
 
-          const char = classifyChar(bands);
-
-          if (!char) {
-            updateBackground(bands);
-            audio.stableChar = null;
-            audio.stableCount = 0;
-            if (now - audio.lastStatusAt > 500) {
-              setListenStatus('Escuchando frecuencias. Esperando una letra clara...');
-              audio.lastStatusAt = now;
-            }
-            return;
-          }
-
-          if (char === audio.stableChar) {
-            audio.stableCount++;
-          } else {
-            audio.stableChar = char;
-            audio.stableCount = 1;
-          }
-
-          if (audio.stableCount >= HOLD_SAMPLES && now - audio.lastEmitAt >= MIN_EMIT_GAP_MS) {
-            emitChar(char);
-            audio.lastEmitAt = now;
-            audio.stableChar = null;
-            audio.stableCount = 0;
-          } else if (now - audio.lastStatusAt > 250) {
-            const label = char === ' ' ? '[space]' : char;
-            setListenStatus(`Frecuencia detectada: ${label}\nConfirmando estabilidad...`);
+          audio.recording = true;
+          audio.capturedFrames.push({ bands, at: now });
+          if (now - audio.lastStatusAt > 250) {
+            setListenStatus(`Grabando audio...\nMuestras: ${audio.capturedFrames.length}\nAl soltar se analizara todo junto.`);
             audio.lastStatusAt = now;
           }
         });
@@ -597,6 +604,7 @@
         setListenStatus('No se pudo activar el microfono.');
         ui.listenBtn.disabled = false;
         ui.stopBtn.disabled = true;
+        ui.stopBtn.textContent = 'Detener';
         throw error;
       }
     }
@@ -604,10 +612,8 @@
     function stopListening() {
       if (audio.sampleTimer) clearTimeout(audio.sampleTimer);
       audio.sampleTimer = null;
-      audio.stableChar = null;
-      audio.stableCount = 0;
-      audio.lastEmitAt = 0;
       audio.listening = false;
+      audio.recording = false;
       if (audio.stream) {
         audio.stream.getTracks().forEach((track) => track.stop());
         audio.stream = null;
@@ -616,10 +622,24 @@
         try { audio.source.disconnect(); } catch {}
         audio.source = null;
       }
+      let decoded = '';
+      if (audio.capturedFrames.length) {
+        setListenStatus('Analizando la grabacion completa...');
+        decoded = decodeCapturedFrames(audio.capturedFrames);
+        if (decoded) {
+          audio.partialText += decoded;
+          ui.receivedText.textContent = audio.partialText || '---';
+          setListenStatus(`Analisis listo.\nDecodificado: ${decoded}\nTexto acumulado: ${audio.partialText || '---'}`);
+        } else {
+          setListenStatus('Analisis listo, pero no salio una letra clara.');
+        }
+      }
+      audio.capturedFrames = [];
       ui.stopBtn.disabled = true;
+      ui.stopBtn.textContent = 'Detener';
       ui.listenBtn.disabled = false;
       ui.receivedText.textContent = audio.partialText || '---';
-      setListenStatus('En espera.');
+      if (!decoded) setListenStatus('En espera.');
     }
 
     ui.senderText.setAttribute('maxlength', '120');
